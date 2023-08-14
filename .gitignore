@@ -1,0 +1,6 @@
+__pycache__
+build
+dist
+.coverage
+htmlcov
+todo.txt
