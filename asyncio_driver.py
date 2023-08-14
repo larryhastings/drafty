@@ -70,17 +70,20 @@ class Timer:
     when_done: Callable
     handle_pending_items: Callable
     cancelled: bool = False
-    start_time: float = None
+
+    # Always initialize start_time, because it might be referenced before run()
+    # is called.
+    start_time: float = field(default_factory=time.time)
 
     async def run(self):
-        # If we've already been cancelled before we have a chance to run, just
-        # exit.  It happens.
-        if self.cancelled:
-            return
-
         # Catch and show the exception here because we're not awaiting on this
         # task anywhere.
         try:
+            # If we've already been cancelled before we have a chance to run, just
+            # exit.  It happens.
+            if self.cancelled:
+                return
+
             self.start_time = time.time()
             await asyncio.sleep(self.duration)
             self.when_done(self.luid)
@@ -99,7 +102,10 @@ class Timer:
         self.cancelled = True
 
     def __repr__(self):
-        return f'{type(self).__qualname__}(duration={self.duration:.4f}, luid={self.luid}, cancelled={self.cancelled}, remaining={time.time()-self.start_time:.4f})'
+        # Time remaining is an approximation, because asyncio.sleep()'s timer
+        # might be different from time.time(), but this is good enough for
+        # debugging.
+        return f"{type(self).__qualname__}(duration={self.duration:.4f}, luid={self.luid}, cancelled={self.cancelled}, remaining={self.duration-(time.time()-self.start_time):.4f})"
 
 
 @dataclass
