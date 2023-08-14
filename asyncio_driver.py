@@ -148,9 +148,9 @@ class AsyncioDriver(Driver):
     def assert_pending_queues_empty(self):
         if len(self.pending_timers) != 0 or len(self.pending_messages) != 0:
             print(
-                "expecting empty pending queues, got {len(self.pending_timers)} timers and {len(self.pending_timers)} messages"
+                f"expecting empty pending queues, got {len(self.pending_timers)} timers and {len(self.pending_timers)} messages"
             )
-        return
+            return
         # The pending queues should be empty.
         assert len(self.pending_timers) == 0, repr(self.pending_timers)
         assert len(self.pending_messages) == 0, repr(self.pending_messages)
@@ -433,6 +433,34 @@ class Console:
         @apl.command()
         def app():
             pprint.pprint(self.driver.server.application)
+
+        @apl.command()
+        # Heavy-handedly set the next state.
+        def new_state(
+            next_state: appeal.validate("follower", "candidate", "leader") = None
+        ):
+            if next_state:
+                # Figure out the next state based on the passed in string.
+                if next_state == "follower":
+                    next = self.driver.server.Follower
+                elif next_state == "candidate":
+                    next = self.driver.server.Candidate
+                elif next_state == "leader":
+                    next = self.driver.server.Leader
+                else:
+                    raise ValueError(f"unknown next_state {next_state}")
+            else:
+                # Figure out the next state based on the current state.  See
+                # the raft paper, firgure 4 for why this order was chosen.
+                if isinstance(self.driver.server.state, self.driver.server.Follower):
+                    next = self.driver.server.Candidate
+                elif isinstance(self.driver.server.state, self.driver.server.Candidate):
+                    next = self.driver.server.Leader
+                elif isinstance(self.driver.server.state, self.driver.server.Leader):
+                    next = self.driver.server.Follower
+                else:
+                    raise ValueError(f"unknown state {type(self.driver.server.state)}")
+            self.driver.server.state = next()
 
         while not self.exit:
             prompt = (
