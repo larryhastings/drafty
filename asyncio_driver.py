@@ -399,15 +399,15 @@ class Console:
                 print(f"{idx:<3}: {task.get_name()}")
                 print(task)
 
-        @apl.command()
+        @apl.command(name='client-msgs')
         def client_msgs(enable: appeal.validate("on", "off") = "on"):
             self.driver.debug_print_client_messages = True if enable == "on" else False
 
-        @apl.command()
+        @apl.command(name='server-msgs')
         def server_msgs(enable: appeal.validate("on", "off") = "on"):
             self.driver.debug_print_server_messages = True if enable == "on" else False
 
-        @apl.command()
+        @apl.command(name='client-queue')
         def client_queue():
             pprint.pprint(self.driver.client_luid_map)
 
@@ -434,7 +434,7 @@ class Console:
         def app():
             pprint.pprint(self.driver.server.application)
 
-        @apl.command()
+        @apl.command(name='new-state')
         # Heavy-handedly set the next state.
         def new_state(
             next_state: appeal.validate("follower", "candidate", "leader") = None
@@ -471,8 +471,10 @@ class Console:
                 # They just pressed enter, loop around.
                 continue
 
+            args = cmd.split()
+
             try:
-                apl.main(cmd.split())
+                apl.main(args)
             except SystemExit as ex:
                 print(ex)
                 continue
