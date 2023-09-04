@@ -4,7 +4,6 @@ import application
 import big.all as big
 from big.all import BoundInnerClass
 from dataclasses import dataclass, field
-import interstate
 import keyvalue
 import log
 from log import Log, CommittedState
@@ -39,7 +38,7 @@ def no_print(self, s):
     pass
 
 @dataclass
-@interstate.accessor()
+@big.accessor()
 class Server:
     """
     Abstracted Raft server.
@@ -86,7 +85,7 @@ class Server:
 
     def start(self, driver):
         self.driver = driver
-        self.interstate = interstate.Interstate(self.Follower())
+        self.state_manager = big.StateManager(self.Follower())
 
         # array of ints of all server ids EXCEPT US
         self.others = []
@@ -113,23 +112,23 @@ class Server:
             return self.on_request_vote_response(response, request, destination, request_luid)
         raise ValueError(f"unrecognized response type {response} (request={request} destination={destination} request_luid={request_luid})")
 
-    @interstate.dispatch()
+    @big.dispatch()
     def on_append_entries(self, request, luid):
         ...
 
-    @interstate.dispatch()
+    @big.dispatch()
     def on_request_vote(self, request, luid):
         ...
 
-    @interstate.dispatch()
+    @big.dispatch()
     def on_client_request(self, request, luid):
         ...
 
-    @interstate.dispatch()
+    @big.dispatch()
     def on_append_entries_response(self, response, request, destination, request_luid):
         ...
 
-    @interstate.dispatch()
+    @big.dispatch()
     def on_request_vote_response(self, response, request, destination, request_luid):
         ...
 
@@ -181,7 +180,7 @@ class Server:
 
     @BoundInnerClass
     @dataclass
-    class State(interstate.State):
+    class State(big.State):
         server: "Server"
         election_timeout_timer = None
 
@@ -191,23 +190,23 @@ class Server:
         def on_exit(self):
             self.server.print_debug(f"<<  exited state {type(self).__name__} -- in term {self.server.term}")
 
-        @interstate.pure_virtual()
+        @big.pure_virtual()
         def on_append_entries(self, request, luid):
             ...
 
-        @interstate.pure_virtual()
+        @big.pure_virtual()
         def on_request_vote(self, request, luid):
             ...
 
-        @interstate.pure_virtual()
+        @big.pure_virtual()
         def on_client_request(self, request, luid):
             ...
 
-        @interstate.pure_virtual()
+        @big.pure_virtual()
         def on_append_entries_response(self, response, request, destination, request_luid):
             ...
 
-        @interstate.pure_virtual()
+        @big.pure_virtual()
         def on_request_vote_response(self, response, request, destination, request_luid):
             ...
 

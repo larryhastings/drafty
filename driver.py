@@ -4,7 +4,6 @@ import big.all as big
 import dataclasses
 from dataclasses import dataclass, field
 from messages import *
-import interstate
 import uuid
 
 
@@ -123,7 +122,7 @@ class Driver:
         self.requests[luid] = (envelope, destination)
         return envelope, luid
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def send_server_request(self, request, destination):
         """
         Called by the abstracted server to send a request
@@ -153,7 +152,7 @@ class Driver:
             )
         return envelope, response_luid, request_envelope, recv_context
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def send_client_response(self, response, luid):
         """
         Called by the abstracted server to send a response
@@ -166,7 +165,7 @@ class Driver:
         """
         ...
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def send_server_response(self, response, luid):
         """
         Called by the abstracted server to send a response
@@ -186,7 +185,7 @@ class Driver:
     def on_response(self, response, request, destination, request_luid): # destination is the person we sent the request to
         return self.server.on_response(response, request, destination, request_luid)
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def time(self):
         """
         Returns the current time in seconds (float or int).
@@ -194,7 +193,7 @@ class Driver:
         """
         ...
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def set_timer(self, interval, callback, luid):
         """
         Sets a timer.  If, after interval (float or int)
@@ -209,7 +208,7 @@ class Driver:
         """
         ...
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def cancel_timer(self, timer):
         ...
 

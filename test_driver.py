@@ -126,7 +126,8 @@ class TestDriver(driver.Driver):
         self.reset_outgoing()
 
         context = "aba daba honeymoon"
-        self.on_client_recv(request, context)
+        client_test_luid = "client-1"
+        self.on_client_recv(request, context, luid=client_test_luid)
 
         def check_response():
             assert len(self.client_responses) == 1, f"expected one client response, got {self.client_responses}"
@@ -158,11 +159,16 @@ if __name__ == "__main__":
         global tests_passed
         tests_passed += 1
 
-    from server import Server, HEARTBEAT_INTERVAL
+    from server import Server
+
+    HEARTBEAT_INTERVAL = 0.5
 
     import raftconfig
     server = Server(
         application=None,
+        election_timeout_interval_start=HEARTBEAT_INTERVAL * 10,
+        election_timeout_interval_range=HEARTBEAT_INTERVAL * 5,
+        heartbeat_interval=HEARTBEAT_INTERVAL,
         id=0,
         servers=raftconfig.servers,
         )
@@ -249,7 +255,7 @@ if __name__ == "__main__":
         for message in destination:
             assert isinstance(message, ServerRequestEnvelope)
             assert isinstance(message.request, AppendEntriesRequest)
-            assert message.request.entries == my_entries
+            assert message.request.entries == my_entries, f"{message.request.entries=} != {my_entries=}"
     success()
 
 

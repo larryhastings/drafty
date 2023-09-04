@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
-import interstate
+import big.all as big
 from messages import *
 
 class Application:
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def on_request(self, request: ClientRequest):
         ...
 
-    @interstate.pure_virtual()
+    @big.pure_virtual()
     def is_logged(self, request: ClientRequest):
         ...
 
