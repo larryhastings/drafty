@@ -251,28 +251,28 @@ if __name__ == "__main__":
     # pprint.pprint(tp.server_outgoing_messages[1])
     for i in server.others:
         assert len(tp.server_outgoing_messages[i]) == 2, f"{len(tp.server_outgoing_messages[i])=} should both be 2"
-    for destination in tp.server_outgoing_messages:
-        for message in destination:
+    for destination in tp.server.others:
+        for message in tp.server_outgoing_messages[destination]:
             assert isinstance(message, ServerRequestEnvelope)
             assert isinstance(message.request, AppendEntriesRequest)
-            assert message.request.entries == my_entries, f"{message.request.entries=} != {my_entries=}"
+            assert not message.request.entries # this is a heartbeat, he doesn't know the other servers' state yet
     success()
 
 
     # serialization experiment
-    d = {
-        'log': packraft.packed(tp.server.log),
-        'term': 3,
-        'candidate': 3,
-    }
-    try:
-        perky.dump("0.pky", d)
-        d2 = perky.load("0.pky")
-        log = packraft.unpacked(d2['log'])
-        assert log == tp.server.log
-        success()
-    finally:
-        os.unlink("0.pky")
+    # d = {
+    #     'log': packraft.packed(tp.server.log),
+    #     'term': 3,
+    #     'candidate': 3,
+    # }
+    # try:
+    #     perky.dump("0.pky", d)
+    #     d2 = perky.load("0.pky")
+    #     log = packraft.unpacked(d2['log'])
+    #     assert log == tp.server.log
+    #     success()
+    # finally:
+    #     os.unlink("0.pky")
 
 
     # write test for replicated log here.

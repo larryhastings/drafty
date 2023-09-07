@@ -8,6 +8,7 @@ import keyvalue
 import log
 from log import Log, CommittedState
 from messages import *
+import pathlib
 import raftconfig
 import random
 from typing import Callable
@@ -50,20 +51,23 @@ class Server:
     heartbeat_interval: float
     election_timeout_interval_start: float
     election_timeout_interval_range: float
-    Leader_id: int = None
+    leader_id: int = None
 
-    print_debug: Callable = field(init=False, default=no_print)
+    print_debug: Callable = field(init=False, default=print)
 
     # because we're 0-based,
     # our "next_index" == len(self.log)
 
     # can't use log.Log, it's occluded by the local "log" attribute
-    log: Log = manufactured_field(Log, repr=False)
+    log: Log = None
     committed: CommittedState = manufactured_field(CommittedState)
 
     def __post_init__(self):
         if self.application == None:
             self.application = keyvalue.KeyValueStore()
+        self.directory = pathlib.Path(str(self.id))
+        self.directory.mkdir(exist_ok=True)
+        self.log = Log(self.directory)
 
     # automatically reset voted_for whenever term changes
     voted_for: int = -1
@@ -505,6 +509,8 @@ class Server:
                 if debug_print:
                     print(f"[WR {self.id}] time to commit!")
 
+                self.state.server.log.serialize()
+
                 if not self.client_requests:
                     if debug_print:
                         print(f"[WR {self.id}] we don't have any client requests, which is fine if we're a heartbeat.")
@@ -522,7 +528,7 @@ class Server:
                     if debug_print:
                         print(f"[WR {self.id}] {luid=}={log_index=}")
                     if log_index is None:
-                        response = self.state.server.application.request(client_request)
+                        response = self.state.server.application.on_request(client_request)
                     else:
                         # if we had more than one, the previous requests were done
                         # on a different server (with an old leader).  so we can't reply.

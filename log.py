@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
-
 import dataclasses
 from dataclasses import dataclass, field
 import messages
+import msgpack
 import packraft
+import pathlib
+import sys
+import zlib
 
 
 def _next_id():
@@ -20,11 +23,29 @@ class LogEntry(packraft.Message):
     term: int
     request: messages.ClientRequest
 
+    def log_serialize(self):
+        l = self.request.log_serialize()
+        l.append(self.term)
+        return l
+
+    @classmethod
+    def log_deserialize(cls, l):
+        term = l.pop()
+        request = messages.ClientRequest.log_deserialize(l)
+        return cls(term, request)
+
+
+NETWORK_BYTE_ORDER = 'big' # also the name of a wonderful PyPI package! check it out!
 
 @dataclass
-class Log(packraft.Message):
+class Log:
+    directory: pathlib.Path
     entries: list[LogEntry] = field(default_factory=list)
     # lock: threading.Lock
+
+    def __post_init__(self):
+        self.log_path = self.directory / "log.data"
+        self.deserialize()
 
     def __getitem__(self, i):
         return self.entries[i]
@@ -40,6 +61,52 @@ class Log(packraft.Message):
         to respond to AppendEntries RPC messages.
         """
         self.entries.append(entry)
+
+    def serialize(self):
+        with self.log_path.open("wb") as f:
+            blobs = []
+            length = 0
+            for i, entry in enumerate(self.entries):
+                o = entry.log_serialize()
+                b = msgpack.dumps(o)
+
+                crc32 = zlib.crc32(b)
+                network_crc32 = crc32.to_bytes(4, NETWORK_BYTE_ORDER)
+
+                length_header = packraft.compute_length_header(b)
+
+                blobs.append(network_crc32)
+                length += len(network_crc32)
+                blobs.append(length_header)
+                length += len(length_header)
+                blobs.append(b)
+                length += len(b)
+
+            serialized_log = b''.join(blobs)
+            print(f"serialized_log = {serialized_log!r}")
+            f.write(serialized_log)
+
+    def deserialize(self):
+        if not self.log_path.exists():
+            return
+        self.entries.clear()
+        with self.log_path.open("rb") as f:
+            print("just opened", self.log_path)
+            while True:
+                network_crc32 = f.read(4)
+                if not network_crc32:
+                    break
+                print(f"{network_crc32=}")
+                stored_crc32 = int.from_bytes(network_crc32, NETWORK_BYTE_ORDER)
+                length = packraft.length_header_from_stream(f)
+                b = f.read(length)
+                computed_crc32 = zlib.crc32(b)
+                if computed_crc32 != stored_crc32:
+                    sys.exit(f"Log corrupt: Entry {len(self.entries)} has mismatching CRC32 (want {hex(stored_crc32)[2:]}, got {hex(computed_crc32)[2:]})")
+                o = msgpack.loads(b)
+                print("LOADED", o, "FROM", repr(b))
+                entry = LogEntry.log_deserialize(o)
+                self.entries.append(entry)
 
     def append_entries(self, previous_index, previous_term, entries):
         """

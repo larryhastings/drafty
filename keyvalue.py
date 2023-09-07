@@ -4,6 +4,8 @@ import application
 from dataclasses import dataclass, field
 from messages import *
 
+sentinel = object()
+
 @dataclass
 class KeyValueStore(application.Application):
 
@@ -11,6 +13,9 @@ class KeyValueStore(application.Application):
 
     def on_request(self, request: ClientRequest):
         if isinstance(request, ClientGetRequest):
+            value = self.store.get(request.key, sentinel)
+            if value == sentinel:
+                return ClientGetResponse(success=False, value=None)
             return ClientGetResponse(success=True, value=self.store[request.key])
         if isinstance(request, ClientPutRequest):
             self.store[request.key] = request.value

@@ -1,11 +1,12 @@
-import sys
-import asyncio
+#!/usr/bin/env python3
 
+import appeal
+import asyncio
 import asyncio_rpc
 import messages
 import raftconfig
-
-import appeal
+import random
+import sys
 
 
 class TooManyRedirectsError(Exception):
@@ -78,6 +79,15 @@ def ping(server_id: int, *, timeout=DEFAULT_TIMEOUT):
 def put(server_id: int, key, value, *, timeout=DEFAULT_TIMEOUT):
     print(run(server_id, messages.ClientPutRequest(key, value), timeout))
 
+
+@app.command()
+def putrnd(server_id: int, *, timeout=DEFAULT_TIMEOUT):
+    letters = "bcdfghjklmnpqrstvwxz"
+    vowels = "aeiouy"
+    key = "".join((random.choice(letters), random.choice(vowels), random.choice(letters),))
+    value = str(int(random.random() * 1000))
+    print(f"put {key}={value}")
+    print(run(server_id, messages.ClientPutRequest(key, value), timeout))
 
 @app.command()
 def get(server_id: int, key, *, timeout=DEFAULT_TIMEOUT):

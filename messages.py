@@ -1,5 +1,7 @@
-import packraft
+import big.all as big
 from dataclasses import dataclass
+import msgpack
+import packraft
 
 
 def decode(msg_bytes):
@@ -15,8 +17,29 @@ class Response(packraft.Message):
     success: bool
 
 
+
+log_request_class_id_to_cls = {}
+
+def register_log_request(id):
+    def register_log_request(cls):
+        assert isinstance(cls, type)
+        cls.log_request_class_id = id
+        log_request_class_id_to_cls[id] = cls
+        return cls
+    return register_log_request
+
 class ClientRequest(Request):
     pass
+
+    @big.pure_virtual()
+    def log_serialize(self):
+        ...
+
+    @staticmethod
+    def log_deserialize(l):
+        class_id = l.pop()
+        cls = log_request_class_id_to_cls[class_id]
+        return cls(*l)
 
 class ClientResponse(Response):
     pass
@@ -29,22 +52,39 @@ class ClientPingRequest(ClientRequest):
 class ClientPingResponse(ClientResponse):
     text: str
 
+@register_log_request(64)
 @dataclass
 class ClientGetRequest(ClientRequest):
     key: str
+
+    def log_serialize(self):
+        return [
+            self.key,
+            self.log_request_class_id
+            ]
 
 @dataclass
 class ClientGetResponse(ClientResponse):
     value: str
 
+@register_log_request(65)
 @dataclass
 class ClientPutRequest(ClientRequest):
     key: str
     value: str
 
+    def log_serialize(self):
+        return [
+            self.key,
+            self.value,
+            self.log_request_class_id,
+            ]
+
 @dataclass
 class ClientPutResponse(ClientResponse):
     pass
+
+
 
 @dataclass
 class ClientRedirectResponse(ClientResponse):
@@ -55,6 +95,11 @@ class ClientNoOpRequest(ClientRequest):
     # used to prevent the tragedy
     # of the Raft paper's dreaded "Figure 8"
     pass
+
+    def log_serialize(self):
+        return [
+            self.log_request_class_id,
+            ]
 
 
 

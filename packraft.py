@@ -218,6 +218,36 @@ class UnsupportedProtocolError(ValueError):
 # 1024-bit pointers, sadly you'll finally hit this limit.
 #
 
+@export
+def compute_length_header(b):
+    length = len(b)
+    length_msg = msgpack.dumps(length)
+    if length < 0x80:
+        return length_msg
+    length_length = len(length_msg)
+    assert length_length <= 0x7f
+    length_length_msg = bytes((length_length | 0x80,)) + length_msg
+    return length_length_msg
+
+@export
+def length_header_from_bytes(b):
+    length = b[0]
+    if not (length & 0x80):
+        return length, b[1:]
+
+    length_end = (length & 0x7F) + 1
+    length_msg = b[1:length_end]
+    length = msgpack.loads(length_msg)
+    return length, b[length_end:]
+
+@export
+def length_header_from_stream(f):
+    length = f.read(1)[0]
+    if length < 0x80:
+        return length
+    length_msg = f.read(length & 0x7F)
+    length = msgpack.loads(length_msg)
+    return length
 
 @export
 def serialize(o, protocol=None):
@@ -235,15 +265,8 @@ def serialize(o, protocol=None):
     if protocol is None:
         protocol = PROTOCOL_IDENTIFIER
     msg = msgpack.dumps(o)
-    length = len(msg)
-    length_msg = msgpack.dumps(length)
-    length_length = len(length_msg)
-    if length_length == 1:
-        # assert length_msg == bytes((length,))
-        return protocol + length_msg + msg
-    # assert length_length <= 127
-    length_length_msg = bytes((length_length + 0x80,))
-    return protocol + length_length_msg + length_msg + msg
+    length_msg = compute_length_header(msg)
+    return protocol + length_msg + msg
 
 
 @export
@@ -264,11 +287,7 @@ def deserialize(b, *, protocol=None):
             f"wrong protocol bytes {received_protocol!r}, don't match {protocol!r}"
         )
 
-    length = recv(1)[0]
-    if length & 0x80:
-        length_msg = recv(length & 0x7F)
-        length = msgpack.loads(length_msg)
-        # assert isinstance(length, int)
+    length, b = length_header_from_bytes(b)
     msg = recv(length)
     d = msgpack.loads(msg)
     # assert isinstance(d, dict)
@@ -312,11 +331,7 @@ def recv(f, *, protocol=None):
             f"wrong protocol bytes {received_protocol!r}, don't match {protocol!r}"
         )
 
-    length = f.recv(1)[0]
-    if length & 0x80:
-        length_msg = f.recv(length & 0x7F)
-        length = msgpack.loads(length_msg)
-        # assert isinstance(length, int)
+    length = length_header_from_stream(f)
     msg = f.recv(length)
     d = msgpack.loads(msg)
     # assert isinstance(d, dict)
