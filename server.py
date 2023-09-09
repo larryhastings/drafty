@@ -49,6 +49,7 @@ class Server:
     servers: list
     id: int
     heartbeat_interval: float
+    committed: CommittedState = manufactured_field(CommittedState)
     election_timeout_interval_start: float
     election_timeout_interval_range: float
     leader_id: int = None
@@ -60,7 +61,6 @@ class Server:
 
     # can't use log.Log, it's occluded by the local "log" attribute
     log: Log = None
-    committed: CommittedState = manufactured_field(CommittedState)
 
     def __post_init__(self):
         if self.application == None:
@@ -281,13 +281,24 @@ class Server:
                 success = self.server.log.append_entries(request.previous_log_index, request.previous_log_term, request.entries)
                 if success:
                     self.server.leader_id = request.leader_id
-                    committed_max_index = max(request.leader_commit_index, len(self.server.log))
-                    for index in range(self.server.committed.index + 1, committed_max_index):
-                        log_entry = self.server.log[index]
-                        request = log_entry.request
-                        response = self.server.application.on_request(request)
-                        assert response.success
-                        self.server.committed.index = index
+                    # remember: request.leader_commit_index and self.server.committed.index
+                    # are both the index of the highest committed request.
+                    # if we've only committed log[0], they are 0.
+                    committed_max_index = max(request.leader_commit_index, self.server.committed.index) + 1
+                    # so this expression --------------------------vvvvvvvvvvvvvvvvvvvvvvvv
+                    committed_max_index = min(committed_max_index, len(self.server.log) - 1)
+                    # is the highest index we can commit, expressed in the same way.
+
+                    if self.server.committed.index < committed_max_index:
+                        # persist
+                        self.server.log.serialize(to_index=committed_max_index)
+                        # and commit
+                        for index in range(self.server.committed.index + 1, committed_max_index + 1):
+                            log_entry = self.server.log[index]
+                            request = log_entry.request
+                            response = self.server.application.on_request(request)
+                            assert response.success
+                            self.server.committed.index = index
 
             return AppendEntriesResponse(
                 term=self.server.term,
@@ -330,7 +341,7 @@ class Server:
 
                 if vote_granted_3:
                     vote_granted_4 = request.last_log_term >= last_log_term
-                    self.server.print_debug(f">>    {vote_granted_3=} = {request.last_log_term=} >= {last_log_term=}")
+                    self.server.print_debug(f">>    {vote_granted_4=} = {request.last_log_term=} >= {last_log_term=}")
 
                 vote_granted = (
                     vote_granted_1
@@ -452,9 +463,11 @@ class Server:
                 return f"<WaitingRoom {self.id} state={type(self.state)} request={self.request} client_requests={list(self.client_requests)} follower_requests={list(self.follower_requests)} committed={self.committed}>"
 
             def add_client_request(self, request, luid, log_index):
+                print(f"[WR {self.id}] add client request {luid=} {request=} {log_index=}")
                 self.client_requests[luid] = (request, log_index)
 
             def add_follower_request(self, request, luid):
+                print(f"[WR {self.id}] add follower request {luid=} {request=}")
                 self.follower_requests[luid] = request
 
             def on_append_entries_response(self, response, request, destination, request_luid):
@@ -464,7 +477,7 @@ class Server:
                 of servers.
                 """
                 debug_print = False
-                # debug_print = True
+                debug_print = True
                 self.append_entries_response_counter += 1
                 counter = self.append_entries_response_counter
                 if debug_print:
@@ -499,7 +512,7 @@ class Server:
 
                 self.committed = luids_received >= consensus_minimum
                 if debug_print:
-                    print(f"[WR {self.id}] we ready to commit?  {self.committed=} = {luids_received} >= {consensus_minimum}")
+                    print(f"[WR {self.id}] we ready to commit?  self.committed = ({luids_received} >= {consensus_minimum}), which is {self.committed}")
                 if not self.committed:
                     if debug_print:
                         print(f"[WR {self.id}] we are not.  until we meet again--farewell, my brother.")
@@ -507,13 +520,14 @@ class Server:
                     return False
 
                 if debug_print:
-                    print(f"[WR {self.id}] time to commit!")
+                    print(f"[WR {self.id}] yes we are! let's commit!")
 
                 self.state.server.log.serialize()
 
                 if not self.client_requests:
                     if debug_print:
                         print(f"[WR {self.id}] we don't have any client requests, which is fine if we're a heartbeat.")
+
                 response = ...
 
                 if debug_print:

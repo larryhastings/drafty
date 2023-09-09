@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import collections
 import dataclasses
 from dataclasses import dataclass, field
 import messages
@@ -10,13 +11,14 @@ import sys
 import zlib
 
 
-def _next_id():
-    i = 0
-    while True:
-        yield i
-        i += 1
+MAX_LOG_SIZE = 2**20 # one megabyte
+MAX_LOG_SIZE = 48
 
-next_id = _next_id().__next__
+
+def manufactured_field(cls, **kwargs):
+    return field(init=False, default_factory=cls, **kwargs)
+
+
 
 @dataclass
 class LogEntry(packraft.Message):
@@ -37,14 +39,35 @@ class LogEntry(packraft.Message):
 
 NETWORK_BYTE_ORDER = 'big' # also the name of a wonderful PyPI package! check it out!
 
+
+class CommittedState:
+    # _index:int = field(default=-1, init=False)  # index into Log
+    _index = -1
+
+    @property
+    def index(self):
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        self._index = value
+
+    def __init__(self, index=-1):
+        self.index = index
+
+    def copy(self):
+        return CommittedState(self.index)
+
+
 @dataclass
 class Log:
     directory: pathlib.Path
-    entries: list[LogEntry] = field(default_factory=list)
-    # lock: threading.Lock
+    entries: list[LogEntry] = manufactured_field(list)
 
     def __post_init__(self):
-        self.log_path = self.directory / "log.data"
+        self.log_path_format = str(self.directory / "log.{i}.data")
+        self.highest_log = 0
+        self.highest_serialized = -1
         self.deserialize()
 
     def __getitem__(self, i):
@@ -62,51 +85,116 @@ class Log:
         """
         self.entries.append(entry)
 
-    def serialize(self):
-        with self.log_path.open("wb") as f:
-            blobs = []
+    def serialize(self, to_index=None):
+        if to_index == None:
+            to_index = len(self.entries)
+        else:
+            assert to_index <= len(self.entries)
+            to_index += 1
+
+        print(f"log.serialize: starting, have {len(self.entries)} entries, will serialize up to index {to_index}.")
+
+        queue = collections.deque()
+
+        fields = []
+        length = 0
+        for entry in self.entries[self.highest_serialized + 1:to_index]:
+            o = entry.log_serialize()
+            b = msgpack.dumps(o)
+
+            crc32 = zlib.crc32(b)
+            network_crc32 = crc32.to_bytes(4, NETWORK_BYTE_ORDER)
+
+            length_header = packraft.compute_length_header(b)
+
+            fields.append(network_crc32)
+            fields.append(length_header)
+            fields.append(b)
+
+            queue.append(b''.join(fields))
+            print(f"log.serialize: queued serialized entry, {len(queue[-1])} bytes")
+
+        entries = []
+        length = 0
+        log_path = None
+
+        def flush():
+            nonlocal entries
+            nonlocal length
+            if not entries:
+                return
+
+            print(f"log.serialize: flushing {len(entries)} entries, total length {length}, to {log_path=}")
+            with log_path.open('ab') as f:
+                f.write(b''.join(entries))
+            self.highest_serialized += len(entries)
+            entries.clear()
             length = 0
-            for i, entry in enumerate(self.entries):
-                o = entry.log_serialize()
-                b = msgpack.dumps(o)
 
-                crc32 = zlib.crc32(b)
-                network_crc32 = crc32.to_bytes(4, NETWORK_BYTE_ORDER)
+        while queue:
+            log_path = pathlib.Path(self.log_path_format.format(i=self.highest_log))
+            if log_path.exists():
+                stat = log_path.stat()
+                log_size = stat.st_size
+            else:
+                log_size = 0
+            log_remaining = MAX_LOG_SIZE - log_size
+            print(f"log.serialize: can write {log_remaining} bytes to {log_path}")
 
-                length_header = packraft.compute_length_header(b)
+            # we use unforced to force writing at least one
+            # log entry to a fresh log file.  in testing,
+            # MAX_LOG_SIZE was 64.  if we got an entry that
+            # serialized to 83 bytes, it would never fit, right?
+            # the unforced flag ensures that, every time we
+            # open a fresh log file, we always write at least
+            # one log entry to it.
+            unforced = (log_remaining != MAX_LOG_SIZE)
+            while queue:
+                entry = queue[0]
+                new_length = length + len(entry)
+                if unforced and (new_length > log_remaining):
+                    break
+                entries.append(entry)
+                length = new_length
+                queue.popleft()
+                unforced = False
 
-                blobs.append(network_crc32)
-                length += len(network_crc32)
-                blobs.append(length_header)
-                length += len(length_header)
-                blobs.append(b)
-                length += len(b)
+            flush()
+            if not queue:
+                break
 
-            serialized_log = b''.join(blobs)
-            print(f"serialized_log = {serialized_log!r}")
-            f.write(serialized_log)
+            self.highest_log += 1
+
+        print(f"log.serialize: done.")
+
 
     def deserialize(self):
-        if not self.log_path.exists():
-            return
         self.entries.clear()
-        with self.log_path.open("rb") as f:
-            print("just opened", self.log_path)
-            while True:
-                network_crc32 = f.read(4)
-                if not network_crc32:
-                    break
-                print(f"{network_crc32=}")
-                stored_crc32 = int.from_bytes(network_crc32, NETWORK_BYTE_ORDER)
-                length = packraft.length_header_from_stream(f)
-                b = f.read(length)
-                computed_crc32 = zlib.crc32(b)
-                if computed_crc32 != stored_crc32:
-                    sys.exit(f"Log corrupt: Entry {len(self.entries)} has mismatching CRC32 (want {hex(stored_crc32)[2:]}, got {hex(computed_crc32)[2:]})")
-                o = msgpack.loads(b)
-                print("LOADED", o, "FROM", repr(b))
-                entry = LogEntry.log_deserialize(o)
-                self.entries.append(entry)
+        while True:
+            log_path = pathlib.Path(self.log_path_format.format(i=self.highest_log))
+            if not log_path.exists():
+                if self.highest_log > 0:
+                    self.highest_log -= 1
+                break
+            with log_path.open("rb") as f:
+                print("just opened", log_path)
+                while True:
+                    network_crc32 = f.read(4)
+                    if not network_crc32:
+                        break
+                    print(f"{network_crc32=}")
+                    stored_crc32 = int.from_bytes(network_crc32, NETWORK_BYTE_ORDER)
+                    length = packraft.length_header_from_stream(f)
+                    b = f.read(length)
+                    computed_crc32 = zlib.crc32(b)
+                    if computed_crc32 != stored_crc32:
+                        sys.exit(f"Log corrupt: Entry {len(self.entries)} has mismatching CRC32 (want {hex(stored_crc32)[2:]}, got {hex(computed_crc32)[2:]})")
+                    o = msgpack.loads(b)
+                    print("LOADED", o, "FROM", repr(b))
+                    entry = LogEntry.log_deserialize(o)
+                    self.entries.append(entry)
+                    self.highest_serialized += 1
+            self.highest_log += 1
 
     def append_entries(self, previous_index, previous_term, entries):
         """
@@ -142,21 +230,3 @@ class Log:
 
         return True
 
-
-class CommittedState:
-    # _index:int = field(default=-1, init=False)  # index into Log
-    _index = -1
-
-    @property
-    def index(self):
-        return self._index
-
-    @index.setter
-    def index(self, value):
-        self._index = value
-
-    def __init__(self, index=-1):
-        self.index = index
-
-    def copy(self):
-        return CommittedState(self.index)
