@@ -12,7 +12,8 @@ import zlib
 
 
 MAX_LOG_SIZE = 2**20 # one megabyte
-MAX_LOG_SIZE = 48
+# fake tiny size to test using multiple files
+# MAX_LOG_SIZE = 48
 
 
 def manufactured_field(cls, **kwargs):
