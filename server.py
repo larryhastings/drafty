@@ -9,6 +9,7 @@ import log
 from log import Log, CommittedState
 from messages import *
 import pathlib
+import perky
 import raftconfig
 import random
 from typing import Callable
@@ -67,6 +68,9 @@ class Server:
             self.application = keyvalue.KeyValueStore()
         self.directory = pathlib.Path(str(self.id))
         self.directory.mkdir(exist_ok=True)
+        self.state_path = self.directory / "state.pky"
+        self.cached_persistent_dict = None
+        self.load_persistent_state()
         self.log = Log(self.directory)
 
     # automatically reset voted_for whenever term changes
@@ -182,6 +186,23 @@ class Server:
             return True
         return what_happened != self.SAME_TERM
 
+    def load_persistent_state(self, *, to_index=None):
+        if self.state_path.exists():
+            d = perky.load(self.state_path)
+            self.term = int(d['term'])
+            self.voted_for = int(d['voted for'])
+            self.cached_persistent_dict = d
+
+    def save_persistent_state(self, *, to_index=None):
+        persistent_dict = {
+            'term': str(self.term),
+            'voted for': str(self.voted_for),
+            }
+        if self.cached_persistent_dict != persistent_dict:
+            perky.dump(self.state_path, persistent_dict)
+            self.cached_persistent_dict = persistent_dict
+        self.log.serialize(to_index=to_index)
+
     @BoundInnerClass
     @dataclass
     class State(big.State):
@@ -291,7 +312,7 @@ class Server:
 
                     if self.server.committed.index < committed_max_index:
                         # persist
-                        self.server.log.serialize(to_index=committed_max_index)
+                        self.server.save_persistent_state(to_index=committed_max_index)
                         # and commit
                         for index in range(self.server.committed.index + 1, committed_max_index + 1):
                             log_entry = self.server.log[index]
@@ -522,7 +543,7 @@ class Server:
                 if debug_print:
                     print(f"[WR {self.id}] yes we are! let's commit!")
 
-                self.state.server.log.serialize()
+                self.state.server.save_persistent_state()
 
                 if not self.client_requests:
                     if debug_print:
