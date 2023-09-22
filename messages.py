@@ -28,8 +28,9 @@ def register_log_request(id):
         return cls
     return register_log_request
 
+@dataclass
 class ClientRequest(Request):
-    pass
+    id: str # GUID
 
     @big.pure_virtual()
     def log_serialize(self):
@@ -41,8 +42,21 @@ class ClientRequest(Request):
         cls = log_request_class_id_to_cls[class_id]
         return cls(*l)
 
+@dataclass
+class LoggedClientRequest(ClientRequest):
+    # inherit from this if this request should be entered in the raft Log.
+
+    @big.pure_virtual()
+    def log_serialize(self):
+        ...
+
 class ClientResponse(Response):
-    pass
+    id: str # GUID from ClientRequest
+
+@dataclass
+class ClientRedirectResponse(ClientResponse):
+    leader_id: int
+
 
 @dataclass
 class ClientPingRequest(ClientRequest):
@@ -57,24 +71,26 @@ class ClientPingResponse(ClientResponse):
 class ClientGetRequest(ClientRequest):
     key: str
 
-    def log_serialize(self):
-        return [
-            self.key,
-            self.log_request_class_id
-            ]
+    # def log_serialize(self):
+    #     return [
+    #         self.id,
+    #         self.key,
+    #         self.log_request_class_id
+    #         ]
 
 @dataclass
 class ClientGetResponse(ClientResponse):
     value: str
 
-@register_log_request(65)
+@register_log_request(64)
 @dataclass
-class ClientPutRequest(ClientRequest):
+class ClientPutRequest(LoggedClientRequest):
     key: str
     value: str
 
     def log_serialize(self):
         return [
+            self.id,
             self.key,
             self.value,
             self.log_request_class_id,
@@ -86,18 +102,14 @@ class ClientPutResponse(ClientResponse):
 
 
 
+@register_log_request(65)
 @dataclass
-class ClientRedirectResponse(ClientResponse):
-    leader_id: int
-
-@dataclass
-class ClientNoOpRequest(ClientRequest):
+class ClientNoOpRequest(LoggedClientRequest):
     # used to prevent the tragedy
     # of the Raft paper's dreaded "Figure 8"
-    pass
-
     def log_serialize(self):
         return [
+            self.id,
             self.log_request_class_id,
             ]
 

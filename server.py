@@ -317,8 +317,9 @@ class Server:
                         for index in range(self.server.committed.index + 1, committed_max_index + 1):
                             log_entry = self.server.log[index]
                             request = log_entry.request
-                            response = self.server.application.on_request(request)
-                            assert response.success
+                            if not isinstance(request, ClientNoOpRequest):
+                                response = self.server.application.on_request(request)
+                                assert response.success
                             self.server.committed.index = index
 
             return AppendEntriesResponse(
@@ -414,10 +415,10 @@ class Server:
                 last_log_term = self.server.log[-1].term if self.server.log else -1,
                 )
 
-            self.server.print_debug("[##] Hello, I'm Bob Johnson, and I want to be your Leader.")
+            self.server.print_debug(f"[##] Hello, I'm Bob Johnson, and I want to be your Leader.")
             for id in self.server.others:
                 self.server.driver.send_server_request(request, id)
-            self.server.print_debug("[##] sent {len(self.server.others)} vote requests:")
+            self.server.print_debug(f"[##] sent {len(self.server.others)} vote requests:")
             self.server.print_debug(f"         {type(request)}")
             self.server.print_debug(f"         {request.term=}")
             self.server.print_debug(f"         {request.last_log_index=}")
@@ -463,6 +464,8 @@ class Server:
         heartbeat_timer = None
         current_waiting_room: "WaitingRoom" = None
         waiting_rooms: dict = None
+        # maps log_index to a 2-tuple: (client_request, luid)
+        log_index_to_client_requests: dict = manufactured_field(dict)
 
         @BoundInnerClass
         @dataclass
@@ -476,16 +479,20 @@ class Server:
             # for this heartbeat.
             follower_requests: dict = manufactured_field(dict)
             id: int = manufactured_field(waiting_room_counter)
+            log_index: int = -1
             committed: bool = False
-            no_op_luid: str = b'totally invalid luid'
             append_entries_response_counter: int = 0
+            no_op_luid: str = b'totally invalid luid'
 
             def __repr__(self):
                 return f"<WaitingRoom {self.id} state={type(self.state)} request={self.request} client_requests={list(self.client_requests)} follower_requests={list(self.follower_requests)} committed={self.committed}>"
 
-            def add_client_request(self, request, luid, log_index):
-                print(f"[WR {self.id}] add client request {luid=} {request=} {log_index=}")
-                self.client_requests[luid] = (request, log_index)
+            def add_client_request(self, request, luid):
+                # This is now only used for unlogged requests.
+                # Requests that go into the log are stored in
+                # log_index_to_client_requests in the Leader.
+                print(f"[WR {self.id}] add client request {luid=} {request=}")
+                self.client_requests[luid] = request
 
             def add_follower_request(self, request, luid):
                 print(f"[WR {self.id}] add follower request {luid=} {request=}")
@@ -544,44 +551,53 @@ class Server:
                     print(f"[WR {self.id}] yes we are! let's commit!")
 
                 self.state.server.save_persistent_state()
+                print(f"[WR server state has been persisted.]")
+
+                responses = {}
+
+                if debug_print:
+                    print(f"[WR {self.id}] committing indices {self.state.server.committed.index + 1} to {self.log_index} inclusive")
+                for index in range(self.state.server.committed.index + 1, self.log_index + 1):
+                    if debug_print:
+                        print(f"[WR {self.id}] committing index {index}, log is len {len(self.state.server.log)}")
+                    log_entry = self.state.server.log[index]
+                    request = log_entry.request
+                    if isinstance(request, ClientNoOpRequest):
+                        self.state.server.committed.index = index
+                        continue
+                    response = self.state.server.application.on_request(request)
+                    responses[index] = response
+                    if debug_print:
+                        print(f"[WR {self.id}] application responds {response=}")
+                    self.state.server.committed.index = index
+
+                    requests_and_luids = self.state.log_index_to_client_requests.get(index, None)
+                    if requests_and_luids:
+                        for cr, luid in requests_and_luids:
+                            response.id = cr.id
+                            self.state.server.driver.send_client_response(response, luid)
+                        del self.state.log_index_to_client_requests[index]
 
                 if not self.client_requests:
                     if debug_print:
                         print(f"[WR {self.id}] we don't have any client requests, which is fine if we're a heartbeat.")
+                    return
 
                 response = ...
 
                 if debug_print:
                     print(f"[WR {self.id}] received consensus from {luids_received=} {self.state.server.committed.index=}")
                     print(f"{self.client_requests=}")
-                for luid, (client_request, log_index) in self.client_requests.items():
+                for luid, client_request in self.client_requests.items():
                     if debug_print:
-                        print(f"[WR {self.id}] {luid=}={log_index=}")
+                        print(f"[WR {self.id}] unlogged client request {luid=}")
                     if luid == self.no_op_luid:
                         continue
-
-                    if debug_print:
-                        print(f"[WR {self.id}] {luid=}={log_index=}")
-                    if log_index is None:
-                        response = self.state.server.application.on_request(client_request)
-                    else:
-                        # if we had more than one, the previous requests were done
-                        # on a different server (with an old leader).  so we can't reply.
-                        if debug_print:
-                            print(f'[WR {self.id}] {log_index=} {self.state.server.committed.index=}')
-                            print(f'[WR {self.id}] range {list(range(self.state.server.committed.index + 1, log_index + 1))}')
-                        for index in range(self.state.server.committed.index + 1, log_index + 1):
-                            log_entry = self.state.server.log[index]
-                            request = log_entry.request
-                            response = self.state.server.application.on_request(request)
-                            if debug_print:
-                                print(f"[WR {self.id}] application responds {response=}")
-                        if debug_print:
-                            print(f"[WR {self.id}] <<JOHNSON>> updating self.state.server.committed.index to {log_index}")
-                        self.state.server.committed.index = log_index
+                    response = self.state.server.application.on_request(client_request)
                     if debug_print:
                         print(f"[WR {self.id}] sending client response {response=} {luid=}")
                     assert response != ..., "work log indices miscalculated!"
+                    response.id = client_request.id
                     self.state.server.driver.send_client_response(response, luid)
 
                 self.client_requests.clear()
@@ -607,7 +623,7 @@ class Server:
 
             # used to prevent the tragedy
             # of the Raft paper's dreaded "Figure 8"
-            no_op = ClientNoOpRequest()
+            no_op = ClientNoOpRequest(f'{self.server.id}-{self.server.term}'.encode('ascii'))
             self.current_waiting_room.no_op_luid = f"no_op-term-{self.server.term}"
             # this will kick off a heartbeat, etc.
             self.on_client_request(no_op, self.current_waiting_room.no_op_luid)
@@ -644,6 +660,7 @@ class Server:
                 r2, luid = self.send_append_entries_request(id)
                 self.current_waiting_room.add_follower_request(r2, luid)
                 self.waiting_rooms[luid] = self.current_waiting_room
+            self.current_waiting_room.log_index = max(self.current_waiting_room.log_index, self.server.committed.index)
             # self.server.print_debug(f"[{self.server.driver.time():03}] heartbeat sent! {list(self.current_waiting_room.follower_requests)}")
             self.current_waiting_room = self.WaitingRoom()
 
@@ -715,10 +732,10 @@ class Server:
         def on_client_request(self, request, luid):
             # self.requests.append((request, luid))
             debug_print = False
+            debug_print = True
             if debug_print:
                 print(f"[Leader.on_client_request -- 1 --] Oh my!  I, the Leader, have received {request=} {luid=}.")
                 print(f"[Leader.on_client_request -- 1 --] In case you're curious, {self.server.committed.index = }")
-            log_entry = log.LogEntry(self.server.term, request)
             if debug_print:
                 print(f"[Leader.on_client_request -- 2 --]")
             if self.server.application.is_logged(request):
@@ -726,21 +743,43 @@ class Server:
                 # log[log_index] == log_entry
                 if debug_print:
                     print(f"[Leader.on_client_request -- 3 --]")
-                log_index = len(self.server.log)
+                log_index = self.server.log.guid_cache.get(request.id)
+                if log_index:
+                    # We've seen this request before.  Has it been committed?
+                    if log_index <= self.server.committed.index:
+                        # it has! reply with success.
+                        if debug_print:
+                            print(f"[Leader.on_client_request -- 3a -- replying with success to already-handled request]")
+                        response = self.server.application.on_handled_request(request)
+                        self.state.server.driver.send_client_response(response, luid)
+                        return
+                    # it hasn't.  fall through, add it to log_index_to_client_requests
+                    if debug_print:
+                        print(f"[Leader.on_client_request -- 3b -- redundant already-submitted request, is in log but not committed]")
+                else:
+                    log_entry = log.LogEntry(self.server.term, request)
+                    log_index = self.server.log.append(log_entry)
+                    assert log_index > self.server.committed.index
+                    if debug_print:
+                        print(f"[Leader.on_client_request -- 3c -- new never-before-seen request, {log_index=} {log_entry=}]")
+
+                if not log_index in self.log_index_to_client_requests:
+                    self.log_index_to_client_requests[log_index] = []
+                self.log_index_to_client_requests[log_index].append((request, luid))
+
+                self.current_waiting_room.log_index = max(self.current_waiting_room.log_index, log_index)
+
                 if debug_print:
                     print(f"[Leader.on_client_request -- 4 --] {log_index=}")
-                self.server.log.append(log_entry)
                 if debug_print:
                     print(f"[Leader.on_client_request -- 5 --] Log is now {self.server.log=}")
                     print(f"[Leader.on_client_request -- 6 --]  {self.server.committed.index=} != {log_index=} -> {self.server.committed.index != log_index}")
-                assert self.server.committed.index != log_index
                 if debug_print:
                     print(f"[Leader.on_client_request -- 7 --] Request gets logged.")
             else:
-                log_index = None
                 if debug_print:
                     print(f"[Leader.on_client_request -- 8 --] No logging for you!")
-            self.current_waiting_room.add_client_request(request, luid, log_index)
+                self.current_waiting_room.add_client_request(request, luid)
             if debug_print:
                 print(f"[Leader.on_client_request -- 9 --] In case you're curious, {self.server.committed.index = }")
                 print(f"[Leader.on_client_request -- 9 --] I, the Leader, now choose to be done processing this client's request... FOR NOW.")

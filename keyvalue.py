@@ -11,7 +11,7 @@ class KeyValueStore(application.Application):
 
     store: dict = field(default_factory=dict, init=False)
 
-    def on_request(self, request: ClientRequest):
+    def on_request(self, request: ClientRequest, *, store=True):
         if isinstance(request, ClientGetRequest):
             value = self.store.get(request.key, sentinel)
             if value == sentinel:
@@ -22,5 +22,11 @@ class KeyValueStore(application.Application):
             return ClientPutResponse(success=True)
         raise ValueError(f"unhandled request {request}")
 
+    def on_handled_request(self, request: ClientRequest):
+        # on a GetRequest, the value may have been changed
+        # since the original request was made.  so you could
+        # get a newer, anachronistic value.  sorry!
+        return self.on_request(request, store=False)
+
     def is_logged(self, request: ClientRequest):
-        return isinstance(request, ClientPutRequest)
+        return isinstance(request, LoggedClientRequest)

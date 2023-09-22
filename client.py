@@ -3,10 +3,12 @@
 import appeal
 import asyncio
 import asyncio_rpc
+import base64
 import messages
 import raftconfig
 import random
 import sys
+import uuid
 
 
 class TooManyRedirectsError(Exception):
@@ -65,33 +67,54 @@ app = appeal.Appeal()
 
 DEFAULT_TIMEOUT = 60
 
+def generate_guid():
+    """
+    Returns a bytes object of length 16,
+    containing effectively-random and
+    hopefully-unique bytes.
+    """
+    # Is uuid1 what we want?
+    # I usually use uuid4, but it turns out
+    # that one is *totally random*.  uuid1
+    # incorporates like local MAC address and stuff
+    # and seems to have a higher chance of being
+    # genuinely globally unique.
+    guid = uuid.uuid1()
+    guid = str(uuid.uuid1())
+    guid = guid.replace('-', '')
+    guid = base64.b16decode(guid, casefold=True)
+    return guid
 
 def run(server_id, request, timeout):
     return asyncio.run(send_receive(server_id, request, timeout))
 
 
 @app.command()
-def ping(server_id: int, *, timeout=DEFAULT_TIMEOUT):
-    print(run(server_id, messages.ClientPingRequest("hello"), timeout))
+def ping(server_id: int, *, guid='', timeout=DEFAULT_TIMEOUT):
+    guid = guid or generate_guid()
+    print(run(server_id, messages.ClientPingRequest(guid, "hello"), timeout))
 
 
 @app.command()
-def put(server_id: int, key, value, *, timeout=DEFAULT_TIMEOUT):
-    print(run(server_id, messages.ClientPutRequest(key, value), timeout))
+def put(server_id: int, key, value, *, guid='', timeout=DEFAULT_TIMEOUT):
+    guid = guid or generate_guid()
+    print(run(server_id, messages.ClientPutRequest(guid, key, value), timeout))
 
 
 @app.command()
-def putrnd(server_id: int, *, timeout=DEFAULT_TIMEOUT):
+def putrnd(server_id: int, *, guid='', timeout=DEFAULT_TIMEOUT):
     letters = "bcdfghjklmnpqrstvwxz"
     vowels = "aeiouy"
     key = "".join((random.choice(letters), random.choice(vowels), random.choice(letters),))
     value = str(int(random.random() * 1000))
     print(f"put {key}={value}")
-    print(run(server_id, messages.ClientPutRequest(key, value), timeout))
+    guid = guid or generate_guid()
+    print(run(server_id, messages.ClientPutRequest(guid, key, value), timeout))
 
 @app.command()
-def get(server_id: int, key, *, timeout=DEFAULT_TIMEOUT):
-    print(run(server_id, messages.ClientGetRequest(key), timeout))
+def get(server_id: int, key, *, guid='', timeout=DEFAULT_TIMEOUT):
+    guid = guid or generate_guid()
+    print(run(server_id, messages.ClientGetRequest(guid, key), timeout))
 
 
 app.main()
