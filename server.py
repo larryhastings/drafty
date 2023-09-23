@@ -762,7 +762,7 @@ class Server:
                         if debug_print:
                             print(f"[Leader.on_client_request -- 3a -- replying with success to already-handled request]")
                         response = self.server.application.on_handled_request(request)
-                        self.state.server.driver.send_client_response(response, luid)
+                        self.server.driver.send_client_response(response, luid)
                         return
                     # it hasn't.  fall through, add it to log_index_to_client_requests
                     if debug_print:
