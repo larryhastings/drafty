@@ -29,6 +29,7 @@ import aioconsole
 
 import asyncio_rpc
 import messages
+from messages import LogEntry
 import raftconfig
 
 # The sans i/o raft server.
@@ -395,7 +396,7 @@ class AsyncioDriver(Driver):
             return {k: v[1] for k, v in self._state_schema.items()}
 
         raw = perky.load(self.state_path)
-        d = {k: _state_schema[k][0](v) for k, v in raw.items()}
+        d = {k: self._state_schema[k][0](v) for k, v in raw.items()}
         self.cached_state_dict = d
         return d
 

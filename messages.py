@@ -176,3 +176,23 @@ class ServerResponseEnvelope(packraft.Message):
     response: ServerResponse
     transaction_id: str
 
+
+# not technically a "message",
+# this is the object stored in the Log
+# to represent one log entry.
+
+@dataclass
+class LogEntry(packraft.Message):
+    term: int
+    request: LoggedClientRequest
+
+    def log_serialize(self):
+        l = self.request.log_serialize()
+        l.append(self.term)
+        return l
+
+    @classmethod
+    def log_deserialize(cls, l):
+        term = l.pop()
+        request = ClientRequest.log_deserialize(l)
+        return cls(term, request)

@@ -14,6 +14,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 from log import *
 from messages import *
 
+import unittest.mock
+
 tests_passed = 0
 
 def success():

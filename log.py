@@ -14,6 +14,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 from dataclasses import dataclass, field
 from driver import Driver
 from lru import LRU
+import math
 import messages
 import packraft
 
@@ -23,23 +24,6 @@ GUID_CACHE_SIZE = 1<<20
 def manufactured_field(cls, **kwargs):
     return field(init=False, default_factory=cls, **kwargs)
 
-
-
-@dataclass
-class LogEntry(packraft.Message):
-    term: int
-    request: messages.ClientRequest
-
-    def log_serialize(self):
-        l = self.request.log_serialize()
-        l.append(self.term)
-        return l
-
-    @classmethod
-    def log_deserialize(cls, l):
-        term = l.pop()
-        request = messages.ClientRequest.log_deserialize(l)
-        return cls(term, request)
 
 
 
@@ -65,7 +49,7 @@ class CommittedState:
 @dataclass
 class Log:
     driver: Driver
-    entries: list[LogEntry] = manufactured_field(list)
+    entries: list[messages.LogEntry] = manufactured_field(list)
     # maps request.id (which is a GUID) -> log index of request
     # Note that all entries in the log get guid_cache cached,
     # whether they're committed or not.
@@ -74,7 +58,10 @@ class Log:
     def __post_init__(self):
         self.guid_cache = LRU(GUID_CACHE_SIZE)
         self.entries = self.driver.load_log()
+        width = int(math.log10(len(self.entries)) + 1)
         for index, entry in enumerate(self.entries):
+            if 1:
+                print(f"persistent log {index:{width}}: {entry}")
             self.guid_cache[entry.request.id] = index
         self.unserialized_start = len(self.entries)
 
@@ -103,7 +90,7 @@ class Log:
             assert to_index <= len(self.entries)
             end = to_index + 1
 
-        assert self.unserialized_start <= end
+        assert self.unserialized_start <= end, f"can't serialize from {self.unserialized_start=} to {end=}, THEY'S BACKWARDS"
         if self.unserialized_start == end:
             return
 

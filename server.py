@@ -100,7 +100,14 @@ class Server:
         self.state_manager = big.StateManager(self.Follower())
 
         self.load_persistent_state()
+
         self.log = Log(self.driver)
+        self.committed.index = len(self.log) - 1
+        for entry in self.log.entries:
+            request = entry.request
+            if isinstance(request, ClientNoOpRequest):
+                continue
+            self.application.on_request(request)
 
         # array of ints of all server ids EXCEPT US
         self.others = []
@@ -760,7 +767,7 @@ class Server:
                     if debug_print:
                         print(f"[Leader.on_client_request -- 3b -- redundant already-submitted request, is in log but not committed]")
                 else:
-                    log_entry = log.LogEntry(self.server.term, request)
+                    log_entry = LogEntry(self.server.term, request)
                     log_index = self.server.log.append(log_entry)
                     assert log_index > self.server.committed.index
                     if debug_print:
