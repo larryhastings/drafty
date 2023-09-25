@@ -633,6 +633,7 @@ class Server:
 
             # used to prevent the tragedy
             # of the Raft paper's dreaded "Figure 8"
+            print("[Leader.on_enter -- send myself a ClientNoOpRequest]")
             no_op = ClientNoOpRequest(f'{self.server.id}-{self.server.term}'.encode('ascii'))
             self.current_waiting_room.no_op_luid = f"no_op-term-{self.server.term}"
             # this will kick off a heartbeat, etc.

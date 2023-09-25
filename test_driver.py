@@ -31,7 +31,9 @@ class TestDriver(driver.Driver):
         self._luid_to_timer = {}
         self.requests = {}
         self.default_state_dict = {'term': 0, 'voted for': -1}
-        self.reset_server_state()
+        self.state_dict = self.default_state_dict.copy()
+        self.saved_log = []
+        self.reset_outgoing()
 
     def reset_outgoing(self):
         self.server_outgoing_messages = []
@@ -39,11 +41,6 @@ class TestDriver(driver.Driver):
             self.server_outgoing_messages.append([])
 
         self.client_responses = []
-
-    def reset_server_state(self):
-        self.reset_outgoing()
-        self.saved_log = []
-        self.state_dict = self.default_state_dict.copy()
 
     def load_state(self):
         return self.state_dict
@@ -113,7 +110,10 @@ class TestDriver(driver.Driver):
                 message = q.pop(0)
                 yield message
 
-    def reply_to_heartbeat_with_success(self, heartbeats):
+    def reply_to_heartbeat_with_success(self, heartbeats=None):
+        if heartbeats is None:
+            heartbeats = list(self.waiting_requests())
+
         for request_envelope in heartbeats:
             assert isinstance(request_envelope, ServerRequestEnvelope)
             request = request_envelope.request
@@ -131,7 +131,7 @@ class TestDriver(driver.Driver):
 
     def append_entries_test(self, request, expected_response):
         assert isinstance(self.server.state, self.server.Follower), "please put server into Follower state for this test"
-        self.reset_server_state()
+        self.reset_outgoing()
 
         request_envelope, request_luid = self.package_server_request(request, self.server.id)
         self.on_server_recv(request_envelope)
@@ -150,7 +150,7 @@ class TestDriver(driver.Driver):
         and see if the Response is correct.
         """
         # assert isinstance(self.server.state, self.server.Leader), "please put server into Leader state for this test"
-        self.reset_server_state()
+        self.reset_outgoing()
 
         context = "aba daba honeymoon"
         client_test_luid = "client-1"
@@ -182,6 +182,15 @@ class TestDriver(driver.Driver):
 if __name__ == "__main__":
     tests_passed = 0
 
+    def heading(s):
+        line = '_' * 79
+        print()
+        print(line)
+        print()
+        print(s)
+        print(line)
+        print()
+
     def success():
         global tests_passed
         tests_passed += 1
@@ -191,19 +200,35 @@ if __name__ == "__main__":
     HEARTBEAT_INTERVAL = 0.5
 
     import raftconfig
-    server = Server(
-        application=None,
-        election_timeout_interval_start=HEARTBEAT_INTERVAL * 10,
-        election_timeout_interval_range=HEARTBEAT_INTERVAL * 5,
-        heartbeat_interval=HEARTBEAT_INTERVAL,
-        id=0,
-        servers=raftconfig.servers,
-        )
-    tp = TestDriver()
 
-    tp.run(server)
+    server = tp = None
 
-    # simulate AppendEntries coming in!
+    def reset_server_state():
+        global tp
+        global server
+
+        server = Server(
+            application=None,
+            election_timeout_interval_start=HEARTBEAT_INTERVAL * 10,
+            election_timeout_interval_range=HEARTBEAT_INTERVAL * 5,
+            heartbeat_interval=HEARTBEAT_INTERVAL,
+            id=0,
+            servers=raftconfig.servers,
+            )
+        tp = TestDriver()
+
+        tp.run(server)
+
+    reset_server_state()
+
+
+
+    ######################################################
+    ######################################################
+    ######################################################
+    heading('test 1')
+    # simulate Follower getting a heartbeat
+    # AppendEntries request, no actual entries
     request = AppendEntriesRequest(
         term=0,
         leader_id=1,
@@ -221,6 +246,12 @@ if __name__ == "__main__":
     tp.append_entries_test(request, expected_response)
     success()
 
+    ######################################################
+    ######################################################
+    ######################################################
+    heading('test 2')
+    # simulate Follower getting an AppendEntries
+    # request with entries inside
     server.state.leader_id = 3
     my_entries = [
             LogEntry(1, ClientPutRequest('guid-1', 'z', 'q')),
@@ -243,12 +274,22 @@ if __name__ == "__main__":
     tp.append_entries_test(request, expected_response)
     success()
 
-    # send a request to a *follower*
+    ######################################################
+    ######################################################
+    ######################################################
+    heading('test 3')
+    # simulate sending a request to a *follower*,
+    # which should redirect that client to the Leader node.
     request = ClientGetRequest('guid-3', "anything")
     expected_response = ClientRedirectResponse(success=False, leader_id=3)
     tp.client_request_test(request, expected_response, expect_heartbeats=False)
     success()
 
+    ######################################################
+    ######################################################
+    ######################################################
+    heading('test 4')
+    # a quick smoke-test of our simulated "timer"
     called = None
     def timer_callback():
         global called
@@ -260,20 +301,39 @@ if __name__ == "__main__":
     assert called == 5, f"{called=} != 5"
     success()
 
+    ######################################################
+    ######################################################
+    ######################################################
+    heading('test 5')
     # leaving Leader state should cancel heartbeat timer
-    tp.reset_server_state()
+    reset_server_state()
     tp.server.state = tp.server.Leader()
+    # entering leader state causes an immediate
+    # AppendEntries request, because of the
+    # "no-op" log entry to avoid the dreaded Figure 8.
+    # so let's answer that.
+    tp.reply_to_heartbeat_with_success()
+    # the server should have also set a heartbeat timer...
     heartbeat_luid = tp.server.state.heartbeat_timer.timer
     assert heartbeat_luid is not None
     heartbeat_event = tp._luid_to_timer[heartbeat_luid]
     assert heartbeat_event is not None
+    # force server to transition to Follower
     tp.server.state = tp.server.Follower()
+    # and it should have canceled the timer.
     assert heartbeat_luid not in tp._luid_to_timer
     assert heartbeat_event not in tp._timers
     success()
 
-    tp.reset_server_state()
+    ######################################################
+    ######################################################
+    ######################################################
+    heading('test 6')
+    # the server should send regular heartbeat requests.
+    reset_server_state()
     tp.server.state = tp.server.Leader()
+    # don't answer the AppendEntries.
+    # instead, skip time forward to cause a heartbeat.
     tp.advance_time(HEARTBEAT_INTERVAL * 1.5)
     # pprint.pprint(tp.server_outgoing_messages[1])
     for i in server.others:
@@ -282,9 +342,9 @@ if __name__ == "__main__":
         for message in tp.server_outgoing_messages[destination]:
             assert isinstance(message, ServerRequestEnvelope)
             assert isinstance(message.request, AppendEntriesRequest)
-            assert not message.request.entries # this is a heartbeat, he doesn't know the other servers' state yet
+            assert len(message.request.entries) == 1
+            assert isinstance(message.request.entries[0].request, ClientNoOpRequest)
     success()
-
 
     # serialization experiment
     # d = {
@@ -305,4 +365,5 @@ if __name__ == "__main__":
     # write test for replicated log here.
     # tp.server.state = tp.server.Leader()
 
+    print()
     print(f"All {tests_passed} driver tests passed.")

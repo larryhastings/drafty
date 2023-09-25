@@ -58,7 +58,11 @@ class Log:
     def __post_init__(self):
         self.guid_cache = LRU(GUID_CACHE_SIZE)
         self.entries = self.driver.load_log()
-        width = int(math.log10(len(self.entries)) + 1)
+        length = len(self.entries)
+        if length:
+            width = int(math.log10(length) + 1)
+        else:
+            width = 1
         for index, entry in enumerate(self.entries):
             if 1:
                 print(f"persistent log {index:{width}}: {entry}")
