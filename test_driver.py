@@ -31,7 +31,8 @@ class TestDriver(driver.Driver):
         self._timers = []
         self._luid_to_timer = {}
         self.requests = {}
-        self.reset_outgoing()
+        self.default_state_dict = {'term': 0, 'voted for': -1}
+        self.reset_server_state()
 
     def reset_outgoing(self):
         self.server_outgoing_messages = []
@@ -39,6 +40,23 @@ class TestDriver(driver.Driver):
             self.server_outgoing_messages.append([])
 
         self.client_responses = []
+
+    def reset_server_state(self):
+        self.reset_outgoing()
+        self.saved_log = []
+        self.state_dict = self.default_state_dict.copy()
+
+    def load_state(self):
+        return self.state_dict
+
+    def save_state(self, d):
+        self.state_dict = d
+
+    def load_log(self):
+        return []
+
+    def save_log(self, log, start, end):
+        self.saved_log.extend(log[start:end])
 
     def run(self, server):
         super().run(server)
@@ -114,7 +132,7 @@ class TestDriver(driver.Driver):
 
     def append_entries_test(self, request, expected_response):
         assert isinstance(self.server.state, self.server.Follower), "please put server into Follower state for this test"
-        self.reset_outgoing()
+        self.reset_server_state()
 
         request_envelope, request_luid = self.package_server_request(request, self.server.id)
         self.on_server_recv(request_envelope)
@@ -133,7 +151,7 @@ class TestDriver(driver.Driver):
         and see if the Response is correct.
         """
         # assert isinstance(self.server.state, self.server.Leader), "please put server into Leader state for this test"
-        self.reset_outgoing()
+        self.reset_server_state()
 
         context = "aba daba honeymoon"
         client_test_luid = "client-1"
@@ -206,8 +224,8 @@ if __name__ == "__main__":
 
     server.state.leader_id = 3
     my_entries = [
-            LogEntry(1, ClientPutRequest('z', 'q')),
-            LogEntry(1, ClientPutRequest('3', '4')),
+            LogEntry(1, ClientPutRequest('guid-1', 'z', 'q')),
+            LogEntry(1, ClientPutRequest('guid-2', '3', '4')),
         ]
 
     request = AppendEntriesRequest(
@@ -227,7 +245,7 @@ if __name__ == "__main__":
     success()
 
     # send a request to a *follower*
-    request = ClientGetRequest("anything")
+    request = ClientGetRequest('guid-3', "anything")
     expected_response = ClientRedirectResponse(success=False, leader_id=3)
     tp.client_request_test(request, expected_response, expect_heartbeats=False)
     success()
@@ -244,7 +262,7 @@ if __name__ == "__main__":
     success()
 
     # leaving Leader state should cancel heartbeat timer
-    tp.reset_outgoing()
+    tp.reset_server_state()
     tp.server.state = tp.server.Leader()
     heartbeat_luid = tp.server.state.heartbeat_timer.timer
     assert heartbeat_luid is not None
@@ -255,7 +273,7 @@ if __name__ == "__main__":
     assert heartbeat_event not in tp._timers
     success()
 
-    tp.reset_outgoing()
+    tp.reset_server_state()
     tp.server.state = tp.server.Leader()
     tp.advance_time(HEARTBEAT_INTERVAL * 1.5)
     # pprint.pprint(tp.server_outgoing_messages[1])

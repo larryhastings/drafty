@@ -196,6 +196,45 @@ class Driver:
     def on_response(self, response, request, destination, request_luid): # destination is the person we sent the request to
         return self.server.on_response(response, request, destination, request_luid)
 
+
+    @big.pure_virtual()
+    def load_state(self):
+        """
+        Loads this node's persisted state dict from disk.
+        Returns the current state, as a dict.
+        If no state has been persisted yet, returns a dict with default values.
+        """
+        ...
+
+    @big.pure_virtual()
+    def save_state(self, d):
+        """
+        Saves this node's current state dict to disk.
+        """
+        ...
+
+    @big.pure_virtual()
+    def load_log(self):
+        """
+        Loads this node's persisted log entries from disk.
+        Returns all the current entries, as a list.
+        If no log entries have been persisted yet, returns an empty list.
+        """
+        ...
+
+    @big.pure_virtual()
+    def save_log(self, log, start, end):
+        """
+        Saves some or all of this node's log entries to disk.
+        All entries written by this function are *appended* to any existing
+        persisted log entries.  (You *cannot* overwrite previous entries
+        using this API.)
+        """
+        ...
+
+
+
+
     @big.pure_virtual()
     def time(self):
         """

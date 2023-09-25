@@ -11,26 +11,39 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
-import sys
 import asyncio
-import time
-from dataclasses import dataclass, field
-from typing import Callable, Any
-import datetime
 import collections
+from dataclasses import dataclass, field
+import datetime
+import msgpack
+import packraft
+import pathlib
+import perky
 import pprint
+import sys
+import time
+from typing import Callable, Any
+import zlib
 
 import aioconsole
 
 import asyncio_rpc
-import raftconfig
 import messages
+import raftconfig
 
 # The sans i/o raft server.
 from server import Server
 
 # Driver is our base class.
 from driver import Driver
+
+
+MAX_LOG_SIZE = 1<<20 # one megabyte
+# fake tiny size to test using multiple files
+# MAX_LOG_SIZE = 48
+
+NETWORK_BYTE_ORDER = 'big' # also the name of a wonderful PyPI package! check it out!
+
 
 
 # Keeps track of when the object itself was created.
@@ -126,8 +139,10 @@ class AsyncioDriver(Driver):
     name: str
     peers: dict[int, RaftPeer]
     server: Server
+    nodenum: int
     client_port: int
     raft_server_port: int
+    directory: pathlib.Path
 
     pending_messages: list = field(default_factory=collections.deque, init=False)
     pending_timers: list = field(default_factory=collections.deque, init=False)
@@ -140,8 +155,13 @@ class AsyncioDriver(Driver):
     debug_print_client_messages: int = False
     debug_print_server_messages: int = False
 
+    cached_state_dict: dict = None
+    highest_log: int = 0
+
     def __post_init__(self):
         super().__init__()
+        self.state_path = self.directory / "state.pky"
+        self.log_path_format = str(self.directory / "log.{i}.data")
 
     async def run(self):
         super().run(self.server)
@@ -363,6 +383,135 @@ class AsyncioDriver(Driver):
         # Send all of the messages in parallel.
         await asyncio.gather(*msg_awaitables)
 
+
+    # key: (type, default_value)
+    _state_schema = {
+        'term': (int, 0),
+        'voted for': (int, -1),
+        }
+
+    def load_state(self):
+        if not self.state_path.exists():
+            return {k: v[1] for k, v in self._state_schema.items()}
+
+        raw = perky.load(self.state_path)
+        d = {k: _state_schema[k][0](v) for k, v in raw.items()}
+        self.cached_state_dict = d
+        return d
+
+    def save_state(self, state_dict):
+        if self.cached_state_dict != state_dict:
+            perky.dump(self.state_path, state_dict)
+            self.cached_state_dict = state_dict
+
+
+    def load_log(self):
+        log = []
+        while True:
+            log_path = pathlib.Path(self.log_path_format.format(i=self.highest_log))
+            if not log_path.exists():
+                if self.highest_log > 0:
+                    self.highest_log -= 1
+                break
+            with log_path.open("rb") as f:
+                # print("just opened", log_path)
+                while True:
+                    network_crc32 = f.read(4)
+                    if not network_crc32:
+                        break
+                    # print(f"{network_crc32=}")
+                    stored_crc32 = int.from_bytes(network_crc32, NETWORK_BYTE_ORDER)
+                    length = packraft.length_header_from_stream(f)
+                    b = f.read(length)
+                    computed_crc32 = zlib.crc32(b)
+                    if computed_crc32 != stored_crc32:
+                        sys.exit(f"Log corrupt: Entry {len(log)} has mismatching CRC32 (want {hex(stored_crc32)[2:]}, got {hex(computed_crc32)[2:]})")
+                    o = msgpack.loads(b)
+                    # print("LOADED", o, "FROM", repr(b))
+                    entry = LogEntry.log_deserialize(o)
+                    log.append(entry)
+            self.highest_log += 1
+        return log
+
+    def save_log(self, log, start, end):
+        queue = collections.deque()
+
+        if (start == 0) and (end == len(log)):
+            slice = log
+        else:
+            slice = log[start:end]
+
+        fields = []
+        length = 0
+        for entry in slice:
+            o = entry.log_serialize()
+            b = msgpack.dumps(o)
+
+            crc32 = zlib.crc32(b)
+            network_crc32 = crc32.to_bytes(4, NETWORK_BYTE_ORDER)
+
+            length_header = packraft.compute_length_header(b)
+
+            fields.append(network_crc32)
+            fields.append(length_header)
+            fields.append(b)
+
+            queue.append(b''.join(fields))
+            # print(f"log.serialize: queued serialized entry, {len(queue[-1])} bytes")
+
+        entries = []
+        length = 0
+        log_path = None
+
+        def flush():
+            nonlocal entries
+            nonlocal length
+            if not entries:
+                return
+
+            # print(f"log.serialize: flushing {len(entries)} entries, total length {length}, to {log_path=}")
+            with log_path.open('ab') as f:
+                f.write(b''.join(entries))
+            entries.clear()
+            length = 0
+
+        while queue:
+            log_path = pathlib.Path(self.log_path_format.format(i=self.highest_log))
+            if log_path.exists():
+                stat = log_path.stat()
+                log_size = stat.st_size
+            else:
+                log_size = 0
+            log_remaining = MAX_LOG_SIZE - log_size
+            # print(f"log.serialize: can write {log_remaining} bytes to {log_path}")
+
+            # we use unforced to force writing at least one
+            # log entry to a fresh log file.  in testing,
+            # MAX_LOG_SIZE was 64.  if we got an entry that
+            # serialized to 83 bytes, it would never fit, right?
+            # the unforced flag ensures that, every time we
+            # open a fresh log file, we always write at least
+            # one log entry to it.
+            unforced = (log_remaining != MAX_LOG_SIZE)
+            while queue:
+                entry = queue[0]
+                new_length = length + len(entry)
+                if unforced and (new_length > log_remaining):
+                    break
+                entries.append(entry)
+                length = new_length
+                queue.popleft()
+                unforced = False
+
+            flush()
+            if not queue:
+                break
+
+            self.highest_log += 1
+
+        # print(f"log.serialize: done.")
+
+
     def time(self):
         return time.time()
 
@@ -516,8 +665,13 @@ async def amain(
         election_timeout_interval_range=election_timeout_interval_range,
     )
 
+    directory = pathlib.Path(str(nodenum))
+    directory.mkdir(exist_ok=True)
+
     asyncio_driver = AsyncioDriver(
         name=f"server {nodenum}",
+        nodenum=nodenum,
+        directory=directory,
         peers={
             idx: RaftPeer(idx, addr)
             for idx, addr in enumerate(raftconfig.servers)

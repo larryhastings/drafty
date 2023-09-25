@@ -20,7 +20,6 @@ import log
 from log import Log, CommittedState
 from messages import *
 import pathlib
-import perky
 import raftconfig
 import random
 from typing import Callable
@@ -77,12 +76,6 @@ class Server:
     def __post_init__(self):
         if self.application == None:
             self.application = keyvalue.KeyValueStore()
-        self.directory = pathlib.Path(str(self.id))
-        self.directory.mkdir(exist_ok=True)
-        self.state_path = self.directory / "state.pky"
-        self.cached_persistent_dict = None
-        self.load_persistent_state()
-        self.log = Log(self.directory)
 
     # automatically reset voted_for whenever term changes
     voted_for: int = -1
@@ -105,6 +98,9 @@ class Server:
     def start(self, driver):
         self.driver = driver
         self.state_manager = big.StateManager(self.Follower())
+
+        self.load_persistent_state()
+        self.log = Log(self.driver)
 
         # array of ints of all server ids EXCEPT US
         self.others = []
@@ -197,21 +193,17 @@ class Server:
             return True
         return what_happened != self.SAME_TERM
 
-    def load_persistent_state(self, *, to_index=None):
-        if self.state_path.exists():
-            d = perky.load(self.state_path)
-            self.term = int(d['term'])
-            self.voted_for = int(d['voted for'])
-            self.cached_persistent_dict = d
+    def load_persistent_state(self):
+        state_dict = self.driver.load_state()
+        self.term = state_dict['term']
+        self.voted_for = state_dict['voted for']
 
     def save_persistent_state(self, *, to_index=None):
-        persistent_dict = {
-            'term': str(self.term),
-            'voted for': str(self.voted_for),
+        state_dict = {
+            'term': self.term,
+            'voted for': self.voted_for,
             }
-        if self.cached_persistent_dict != persistent_dict:
-            perky.dump(self.state_path, persistent_dict)
-            self.cached_persistent_dict = persistent_dict
+        self.driver.save_state(state_dict)
         self.log.serialize(to_index=to_index)
 
     @BoundInnerClass
