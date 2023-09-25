@@ -182,18 +182,19 @@ better and adjusted our implementation to match.
 The downside of this architecture-heavy approach is that you can
 lose track of "where you are".  In `server.py` there are
 three possible subsystems you might be coding on at any
-particular time: the `Server`, the `State`, and the `WaitingRoom`.
+particular time: the `Server`, the `State`, and the
+`WaitingRoom`.
 If you need to refer to another subsystem, e.g. the `Log`,
 each of thees must follow a different dotted path to that
 object, for example a method on the `WaitingRoom` would
 refer to the `Log` object via `self.state.server.log`,
 wheras the `Server` object could find it with just `self.log`.
-If you are moving code from one place to another, and it
+If you're moving code from one place to another, and it
 happens to be between subsystems and you don't notice, now
 you have an `AttributeError` waiting to happen.
 Combine this with the fact that our `asyncio` design likes
 to hide exceptions and you have a constant stumbling block
-for debugging.
+during development.
 
 
 ### The "luid"
