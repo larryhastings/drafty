@@ -13,6 +13,10 @@ or as a metaphorical signpost on the road to perdition.
 Features:
 
 * Uses asyncio.
+* Raft implementation has only high-level
+  [sans-I/O](https://sans-io.readthedocs.io/how-to-sans-io.html)
+  interfaces; all interactions with the local platform
+  go through an abstracted platform driver.
 * Single-threaded.
 * Implements a simple key-value store.
 * Implements the following Raft features:
@@ -99,7 +103,7 @@ function for the project.  When you start a drafty instance,
 you start a Driver, and the Driver starts the Server.
 
 The most important detail about this design: the Server
-never directly talks to the local platform.  The Server is
+never directly talks to the local platform.  It's
 a conceptually "pure" system.  It doesn't directly talk to
 network sockets or files; it doesn't have any concept of time.
 The Driver virtualizes all that functionality; all network
@@ -130,7 +134,7 @@ key/value store.
 
 ### State, Leader, Candidate, Follower
 
-Network-handling code is usually best implemented as a state
+Network-handling code is best implemented as a state
 machine, and Raft is no exception.  Most of the actual Raft
 algorithm is implemented in three state classes: Follower,
 Candidate, and Leader.  These all inherit from a State base
@@ -140,7 +144,8 @@ When a network message arrives, the Driver sends it to the
 Server, and the Server dispatches it to the current State.
 So, if the node receives a Raft "AppendEntries" request, the
 code that handles it is the `on_append_entries_request` function
-in the current State (Follower, Candidate, Leader).
+in the current State (Follower, Candidate, Leader).  All incoming
+network requests and responses are handled in this way.
 
 drafty uses 
 ['StateManager'](https://github.com/larryhastings/big#statemanagerstate--on_enteron_enter-on_exiton_exit-state_classnone)
@@ -149,8 +154,10 @@ from Larry's
 library to manage the state.  Originally we used a
 local precursor of this library called `interstate`;
 this was removed in favor of the cleaned-up version that
-went into **big**, but you might still use it if you look
-at old revisions.
+went into **big**, but you might still see it if you
+examine older revisions.  (`interstate` and `big.state`
+work almost identically, differing only in details that
+are irrelevant to drafty.)
 
 
 ### WaitingRoom
@@ -169,27 +176,27 @@ it needs to send out an AppendEntries request to each of its
 Followers, and only commit the entries when more than 50% of
 the Followers have responded with success.
 
-In the final analysis WaitingRoom is probably a bit
-overly complex for the problem we were solving.  But
-we were worried about the complexity of Raft, so we
-erred on the side of too much architecture instead of
-not enough.  The WaitingRoom approach worked great, and
-it was easy to modify as we understood the algorithm
-better and adjusted our implementation to match.
+In the final analysis WaitingRoom is probably overkill
+for the problem we were solving.  But we were worried
+about the complexity of Raft, so we erred on the side
+of too much architecture instead of not enough.  The
+WaitingRoom approach worked great, and it was easy to
+modify as we understood the algorithm better and
+adjusted our implementation to match.
 
 ### The downside of this approach
 
-The downside of this architecture-heavy approach is that you can
-lose track of "where you are".  In `server.py` there are
-three possible subsystems you might be coding on at any
-particular time: the `Server`, the `State`, and the
-`WaitingRoom`.
+The downside of drafty's architecture-heavy approach is
+that you can lose track of "where you are".  In `server.py`
+there are three possible subsystems you might be coding
+on at any particular time: the `Server`, the `State`,
+and the `WaitingRoom`.
 If you need to refer to another subsystem, e.g. the `Log`,
-each of thees must follow a different dotted path to that
-object, for example a method on the `WaitingRoom` would
+each of these must follow a different dotted path to that
+object.  For example, a method on the `WaitingRoom` would
 refer to the `Log` object via `self.state.server.log`,
 wheras the `Server` object could find it with just `self.log`.
-If you're moving code from one place to another, and it
+If you're shuffling code from one area to another, and it
 happens to be between subsystems and you don't notice, now
 you have an `AttributeError` waiting to happen.
 Combine this with the fact that our `asyncio` design likes
@@ -204,7 +211,11 @@ we called a "luid".  A "GUID" is a Globally Unique IDentifier;
 naturally, a "luid" is a Locally Unique IDentifier.  LUIDs are
 names associated with data coming from or going out over the
 network.  They're allocated locally, and are only guaranteed
-to be unique on the node where they were allocated.
+to be unique on the node where they were allocated.  Thus,
+if you send a luid to another server, e.g. as metadata as part
+of a request, the other server probably shouldn't use that luid
+as a key in a dictionary, as it's not guaranteed to be unique
+in their namespace.
 
 One aspect of our design is that the various server nodes
 don't maintain permanent open connections to each other.
@@ -218,12 +229,15 @@ networked server design, you'd associate the request with
 the open socket.  Since we can't do that, we needed to
 associate it with some other ID; the luid became that id.
 
-When a network message comes in off the wire, the Driver will
-allocate a luid to it to keep track of it as it makes its way
-through the Server.  The response emitted by the Server will
-have the request luid attached, which helps the Driver associate
-the response with the original request and therefore the
-originating node.
+Luids are used on both sides of a server-side RPC call.
+The sending server uses a luid as the `transaction_id`
+in the "envelope" containing the RPC call, which is
+returned as part of the response.  And when a network
+message comes in off the wire from a remote server, 
+it gets assigned a luid to track it locally.
+
+Note that the "abstracted server" never deals with luids.
+All luids are assigned and managed in the driver.
 
 It sounds a bit complicated but it really isn't.  And actually
 it paid off in one really lovely way: internally we have a
@@ -236,6 +250,13 @@ digits with some dashes--our "luids" communicated information
 about the object with which they were associated,
 like `'remote-request-5'`.
 
+One final note: the client uses real GUIDs, not luids,
+when making requests to the server.  This was necessary
+to support the "repeated requests don't commit twice to
+the log" feature.  To save space, these GUIDs are losslessly
+compressed, from 36 bytes to 16 bytes, by throwing away
+the dashes and merging each pair of hex characters into
+one byte.
 
 ## Notes on indexing
 

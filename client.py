@@ -128,4 +128,5 @@ def get(server_id: int, key, *, guid='', timeout=DEFAULT_TIMEOUT):
     print(run(server_id, messages.ClientGetRequest(guid, key), timeout))
 
 
-app.main()
+if __name__ == '__main__':
+    app.main()
