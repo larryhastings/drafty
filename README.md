@@ -215,7 +215,9 @@ to be unique on the node where they were allocated.  Thus,
 if you send a luid to another server, e.g. as metadata as part
 of a request, the other server probably shouldn't use that luid
 as a key in a dictionary, as it's not guaranteed to be unique
-in their namespace.
+in their namespace.  If you get a luid as part of a network
+message, you should include it as part of your response, and
+otherwise you shouldn't do anything with it.
 
 One aspect of our design is that the various server nodes
 don't maintain permanent open connections to each other.
@@ -234,7 +236,7 @@ The sending server uses a luid as the `transaction_id`
 in the "envelope" containing the RPC call, which is
 returned as part of the response.  And when a network
 message comes in off the wire from a remote server, 
-it gets assigned a luid to track it locally.
+the server assigns it its *own* luid, to track it locally.
 
 Note that the "abstracted server" never deals with luids.
 All luids are assigned and managed in the driver.
@@ -244,7 +246,7 @@ it paid off in one really lovely way: internally we have a
 generator function that makes it easy to create an iterator
 that returns successive luid values, assembled from a readable
 text string and a monotonically increasing number.  This was
-a boon during debugging; instead of a message associatedw
+a boon during debugging; instead of a message associated
 with a conventional GUID--a meaningless string of 32 hex
 digits with some dashes--our "luids" communicated information
 about the object with which they were associated,
@@ -261,23 +263,25 @@ one byte.
 ## Notes on indexing
 
 Raft calls for 1-based indexing; that is, the first entry
-in an array is index 1.  Like Python, we  use 0-based
-indexing for the log.  We therefore us `-1` as the magic
-value for "leaderCommittedIndex" when the log is empty.
+in an array is index 1.  W instead use 0-based
+indexing for the log, like a Python array.  We therefore
+use `-1` as the magic value for "leaderCommittedIndex"
+when the log is empty.
 
 The Raft choice of using 1-based indexing is a bit
 perplexing--did they initially write it in Pascal?
 Apart from changing to 0-indexing, we more or less
 adhered to sending values in messages in the spirit
 of what the Raft protocol requires.  This required
-a certain amount of "adding 1 here" and "subtracting 1 there",
-which is confusing.  Doing it this way felt more sane
-in the context of the weeklong class where we wrote
-this project, as we felt fidelity to what the Raft
-paper dictates would be less confusing overall.  It's
-remotely possible we'll revisit this decision in the
-future, slightly altering our wire protocol so our logic
-can have fewer +1s and -1s for computing indices.
+a certain amount of "adding 1 here" and
+"subtracting 1 there", which is confusing.  Doing it
+this way felt more sane in the context of the weeklong
+class where we wrote this project, as we felt fidelity
+to what the Raft paper dictates would be less confusing
+overall.  It's remotely possible we'll revisit this
+decision in the future, slightly altering our wire
+protocol so our logic can have fewer +1s and -1s for
+computing indices.
 
 (In particular, we note that 1-based "the index of the
 most recent committed entry" is the same number as
